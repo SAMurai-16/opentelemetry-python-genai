@@ -22,18 +22,21 @@ from opentelemetry.util.genai.handler import TelemetryHandler
 from .extractors import (
     extract_converse_request,
     extract_converse_response,
+    extract_invoke_agent_request,
     extract_invoke_model_request,
     extract_invoke_model_response,
     extract_server_address_and_port,
 )
 from .stream import (
     BedrockConverseStreamWrapper,
+    BedrockInvokeAgentStreamWrapper,
     BedrockInvokeModelStreamWrapper,
 )
 
 _logger = logging.getLogger(__name__)
 
 BEDROCK_RUNTIME = "bedrock-runtime"
+BEDROCK_AGENT_RUNTIME = "bedrock-agent-runtime"
 
 
 def _handle_converse(
@@ -153,6 +156,45 @@ def _handle_invoke_model(
     return response
 
 
+def _handle_invoke_agent(
+    wrapped: Callable[..., Any],
+    instance: BaseClient,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    api_params: dict[str, Any],
+    handler: TelemetryHandler,
+) -> Any:
+    endpoint_url = getattr(
+        getattr(instance, "meta", None), "endpoint_url", None
+    )
+    server_address, server_port = extract_server_address_and_port(endpoint_url)
+    invocation = handler.invoke_remote_agent(
+        provider=GenAiProviderNameValues.AWS_BEDROCK.value,
+        server_address=server_address,
+        server_port=server_port,
+    )
+    capture_content = handler.should_capture_content()
+    extract_invoke_agent_request(
+        api_params, invocation, capture_content=capture_content
+    )
+    try:
+        response: Any = wrapped(*args, **kwargs)
+    except BaseException as exc:
+        invocation.fail(exc)
+        raise
+
+    if "completion" in response:
+        response["completion"] = BedrockInvokeAgentStreamWrapper(
+            response["completion"],
+            invocation=invocation,
+            capture_content=capture_content,
+        )
+        return response
+
+    invocation.stop()
+    return response
+
+
 def _make_api_call_wrapper(handler: TelemetryHandler) -> Callable[..., Any]:
     def _wrapper(
         wrapped: Callable[..., Any],
@@ -163,7 +205,7 @@ def _make_api_call_wrapper(handler: TelemetryHandler) -> Callable[..., Any]:
         service_name = getattr(
             getattr(instance, "_service_model", None), "service_name", None
         )
-        if service_name != BEDROCK_RUNTIME:
+        if service_name not in (BEDROCK_RUNTIME, BEDROCK_AGENT_RUNTIME):
             return wrapped(*args, **kwargs)
 
         operation_name = args[0] if args else kwargs.get("operation_name")
@@ -174,27 +216,44 @@ def _make_api_call_wrapper(handler: TelemetryHandler) -> Callable[..., Any]:
             else {}
         )
 
-        if operation_name in ("Converse", "ConverseStream"):
-            return _handle_converse(
-                wrapped,
-                instance,
-                args,
-                kwargs,
-                api_params,
-                handler,
-                is_stream=(operation_name == "ConverseStream"),
-            )
+        if service_name == BEDROCK_RUNTIME:
+            if operation_name in ("Converse", "ConverseStream"):
+                return _handle_converse(
+                    wrapped,
+                    instance,
+                    args,
+                    kwargs,
+                    api_params,
+                    handler,
+                    is_stream=(operation_name == "ConverseStream"),
+                )
 
-        if operation_name in ("InvokeModel", "InvokeModelWithResponseStream"):
-            return _handle_invoke_model(
-                wrapped,
-                instance,
-                args,
-                kwargs,
-                api_params,
-                handler,
-                is_stream=(operation_name == "InvokeModelWithResponseStream"),
-            )
+            if operation_name in (
+                "InvokeModel",
+                "InvokeModelWithResponseStream",
+            ):
+                return _handle_invoke_model(
+                    wrapped,
+                    instance,
+                    args,
+                    kwargs,
+                    api_params,
+                    handler,
+                    is_stream=(
+                        operation_name == "InvokeModelWithResponseStream"
+                    ),
+                )
+
+        if service_name == BEDROCK_AGENT_RUNTIME:
+            if operation_name == "InvokeAgent":
+                return _handle_invoke_agent(
+                    wrapped,
+                    instance,
+                    args,
+                    kwargs,
+                    api_params,
+                    handler,
+                )
 
         return wrapped(*args, **kwargs)
 

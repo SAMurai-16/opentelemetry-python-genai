@@ -11,6 +11,7 @@ import pytest
 
 from opentelemetry.instrumentation.genai.bedrock.patch import (
     _handle_converse,
+    _handle_invoke_agent,
     _handle_invoke_model,
 )
 from opentelemetry.semconv._incubating.attributes import (
@@ -23,6 +24,14 @@ def _bedrock_client() -> Any:
     return SimpleNamespace(
         meta=SimpleNamespace(
             endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com"
+        )
+    )
+
+
+def _bedrock_agent_runtime_client() -> Any:
+    return SimpleNamespace(
+        meta=SimpleNamespace(
+            endpoint_url="https://bedrock-agent-runtime.us-east-1.amazonaws.com"
         )
     )
 
@@ -73,6 +82,34 @@ def test_invoke_model_records_cancelled_error(
             {
                 "modelId": "anthropic.claude-v2",
                 "body": "{}",
+            },
+            handler,
+        )
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert (
+        spans[0].attributes[ErrorAttributes.ERROR_TYPE]
+        == "asyncio.exceptions.CancelledError"
+    )
+
+
+def test_invoke_agent_records_cancelled_error(
+    tracer_provider,
+    span_exporter,
+) -> None:
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+
+    with pytest.raises(asyncio.CancelledError):
+        _handle_invoke_agent(
+            _cancelled_call,
+            _bedrock_agent_runtime_client(),
+            (),
+            {},
+            {
+                "agentId": "AGENT_CANCEL",
+                "agentAliasId": "ALIAS_CANCEL",
+                "sessionId": "session-cancel",
             },
             handler,
         )

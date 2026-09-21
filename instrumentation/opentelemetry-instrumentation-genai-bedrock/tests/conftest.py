@@ -52,6 +52,21 @@ def bedrock_client():
     return session.client("bedrock-runtime", **kwargs)
 
 
+@pytest.fixture
+def bedrock_agent_runtime_client():
+    """Create and return a Bedrock Agent Runtime client."""
+    session = boto3.session.Session()
+    kwargs = {
+        "region_name": os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+    }
+    endpoint_url = os.getenv(
+        "AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME"
+    ) or os.getenv("AWS_ENDPOINT_URL")
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    return session.client("bedrock-agent-runtime", **kwargs)
+
+
 @pytest.fixture(scope="module")
 def vcr_config():
     """Configure VCR for recording/replaying HTTP interactions."""

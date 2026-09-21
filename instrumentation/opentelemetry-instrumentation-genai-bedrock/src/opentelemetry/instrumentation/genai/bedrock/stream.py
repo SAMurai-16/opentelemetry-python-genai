@@ -8,7 +8,10 @@ from typing import Any
 
 from botocore.eventstream import EventStream
 
-from opentelemetry.util.genai.invocation import InferenceInvocation
+from opentelemetry.util.genai.invocation import (
+    InferenceInvocation,
+    RemoteAgentInvocation,
+)
 from opentelemetry.util.genai.stream import SyncStreamWrapper
 from opentelemetry.util.genai.types import (
     MessagePart,
@@ -423,6 +426,52 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                     )
                 ]
 
+        self._self_invocation.stop()
+
+    def _on_stream_error(self, error: BaseException) -> None:
+        self._self_invocation.fail(error)
+
+
+class BedrockInvokeAgentStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
+    """Wrapper for Bedrock Agent Runtime invoke_agent EventStream."""
+
+    def __init__(
+        self,
+        stream: EventStream | Any,
+        invocation: RemoteAgentInvocation,
+        *,
+        capture_content: bool = True,
+    ) -> None:
+        super().__init__(stream, invocation=invocation)
+        self._self_invocation = invocation
+        self._self_capture_content = capture_content
+        self._self_accumulated_text: list[str] = []
+
+    def _process_chunk(self, chunk: dict[str, Any]) -> None:
+        if not _is_dict(chunk):
+            return
+
+        # Bedrock Agent Runtime yields event dicts like {'chunk': {'bytes': b'...'}}
+        if "chunk" in chunk and _is_dict(chunk["chunk"]):
+            raw_bytes = chunk["chunk"].get("bytes")
+            if self._self_capture_content and raw_bytes is not None:
+                if isinstance(raw_bytes, (bytes, bytearray)):
+                    self._self_accumulated_text.append(
+                        raw_bytes.decode("utf-8", errors="replace")
+                    )
+                elif isinstance(raw_bytes, str):
+                    self._self_accumulated_text.append(raw_bytes)
+
+    def _on_stream_end(self) -> None:
+        if self._self_capture_content and self._self_accumulated_text:
+            self._self_invocation.output_messages = [
+                OutputMessage(
+                    role=Role.ASSISTANT.value,
+                    parts=[
+                        TextPart(content="".join(self._self_accumulated_text))
+                    ],
+                )
+            ]
         self._self_invocation.stop()
 
     def _on_stream_error(self, error: BaseException) -> None:

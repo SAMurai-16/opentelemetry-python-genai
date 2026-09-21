@@ -9,7 +9,10 @@ from typing import Any, TypeGuard
 from urllib.parse import urlparse
 
 from opentelemetry.semconv._incubating.attributes import aws_attributes
-from opentelemetry.util.genai.invocation import InferenceInvocation
+from opentelemetry.util.genai.invocation import (
+    InferenceInvocation,
+    RemoteAgentInvocation,
+)
 from opentelemetry.util.genai.types import (
     BlobPart,
     FunctionToolDefinition,
@@ -818,3 +821,30 @@ def extract_invoke_model_response(
                     finish_reason=finish_reason or "error",
                 )
             ]
+
+
+def extract_invoke_agent_request(
+    api_params: dict[str, Any],
+    invocation: RemoteAgentInvocation,
+    *,
+    capture_content: bool = True,
+) -> None:
+    """Populate request attributes from invoke_agent request."""
+    if "agentId" in api_params and api_params["agentId"] is not None:
+        invocation.agent_id = str(api_params["agentId"])
+    if "agentAliasId" in api_params and api_params["agentAliasId"] is not None:
+        invocation.agent_version = str(api_params["agentAliasId"])
+    if "sessionId" in api_params and api_params["sessionId"] is not None:
+        invocation.conversation_id = str(api_params["sessionId"])
+
+    if (
+        capture_content
+        and "inputText" in api_params
+        and api_params["inputText"] is not None
+    ):
+        invocation.input_messages = [
+            InputMessage(
+                role=Role.USER.value,
+                parts=[TextPart(content=str(api_params["inputText"]))],
+            )
+        ]
