@@ -1347,8 +1347,9 @@ def test_responses_create_captures_custom_tool_history(
     )
 
     (span,) = span_exporter.get_finished_spans()
-    # The replayed `reasoning` item is not recorded: it carries no readable
-    # text, and the response path drops such items too.
+    # The replayed `reasoning` item has no readable text (encrypted only),
+    # so it is still dropped — only reasoning items with summary/content
+    # text are recorded.
     assert_messages_attribute(
         span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES],
         EXPECTED_CUSTOM_TOOL_INPUT_MESSAGES,
