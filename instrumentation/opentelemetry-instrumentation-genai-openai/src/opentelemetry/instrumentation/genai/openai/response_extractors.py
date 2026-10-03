@@ -28,6 +28,12 @@ from .utils import (
 if TYPE_CHECKING:
     from openai.types.responses.response import Response
     from openai.types.responses.response_output_item import ResponseOutputItem
+    from openai.types.responses.response_reasoning_item import (
+        ResponseReasoningItem,
+    )
+    from openai.types.responses.response_reasoning_item_param import (
+        ResponseReasoningItemParam,
+    )
     from openai.types.responses.response_usage import ResponseUsage
     from openai.types.responses.tool_param import ToolParam
 
@@ -264,7 +270,9 @@ def _get_call_id(item: object) -> str | None:
     )
 
 
-def _extract_reasoning_parts(item: object) -> list[ReasoningPart]:
+def _extract_reasoning_parts(
+    item: ResponseReasoningItem | ResponseReasoningItemParam,
+) -> list[ReasoningPart]:
     if ReasoningPart is None:
         return []
 

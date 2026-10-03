@@ -757,6 +757,36 @@ def test_extract_input_messages_reasoning_not_merged_with_tool_calls(
     assert messages[2].parts[0].type == "tool_call"
 
 
+def test_extract_input_messages_reasoning_before_parallel_tool_calls(
+    loaded_module,
+):
+    messages = loaded_module.get_input_messages(
+        [
+            {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Planning..."}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "f1",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "f2",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert [m.role for m in messages] == ["assistant", "assistant"]
+    assert [p.type for p in messages[0].parts] == ["reasoning"]
+    assert [p.id for p in messages[1].parts] == ["call_1", "call_2"]
+
+
 def test_extract_input_messages_without_reasoning_part_type(loaded_module):
     reasoning_item = {
         "id": "rs_1",
