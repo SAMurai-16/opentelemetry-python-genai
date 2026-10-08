@@ -787,16 +787,6 @@ def test_extract_input_messages_reasoning_before_parallel_tool_calls(
     assert [p.id for p in messages[1].parts] == ["call_1", "call_2"]
 
 
-def test_extract_input_messages_without_reasoning_part_type(loaded_module):
-    reasoning_item = {
-        "id": "rs_1",
-        "type": "reasoning",
-        "summary": [{"type": "summary_text", "text": "Thought"}],
-    }
-    with mock.patch.object(loaded_module, "ReasoningPart", None):
-        assert loaded_module.get_input_messages([reasoning_item]) == []
-
-
 def test_extract_output_messages_maps_parts_and_finish_reasons(loaded_module):
     response = _make_response(
         output=[

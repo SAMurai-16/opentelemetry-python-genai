@@ -37,14 +37,6 @@ if TYPE_CHECKING:
     from openai.types.responses.response_usage import ResponseUsage
     from openai.types.responses.tool_param import ToolParam
 
-    from opentelemetry.util.genai.types import (
-        Error,
-        InputMessage,
-        OutputMessage,
-        TextPart,
-        ToolDefinition,
-    )
-
 try:
     from openai.types.responses.response import Response
     from openai.types.responses.response_function_tool_call import (
@@ -81,36 +73,23 @@ except ImportError:
     ResponseCustomToolCall = None
 
 
-try:
-    from opentelemetry.util.genai.types import (
-        Error,
-        FunctionToolDefinition,
-        GenericToolDefinition,
-        InputMessage,
-        OutputMessage,
-        ReasoningPart,
-        Role,
-        ServerToolCallPart,
-        ServerToolCallResponsePart,
-        TextPart,
-        ToolCallResponsePart,
-    )
-    from opentelemetry.util.genai.types import (
-        ToolCallRequestPart as ToolCall,
-    )
-except ImportError:
-    Error = None
-    FunctionToolDefinition = None
-    GenericToolDefinition = None
-    InputMessage = None
-    OutputMessage = None
-    ReasoningPart = None
-    Role = None
-    ServerToolCallPart = None
-    ServerToolCallResponsePart = None
-    TextPart = None
-    ToolCall = None
-    ToolCallResponsePart = None
+from opentelemetry.util.genai.types import (
+    Error,
+    FunctionToolDefinition,
+    GenericToolDefinition,
+    InputMessage,
+    OutputMessage,
+    ReasoningPart,
+    Role,
+    ServerToolCallPart,
+    ServerToolCallResponsePart,
+    TextPart,
+    ToolCallResponsePart,
+    ToolDefinition,
+)
+from opentelemetry.util.genai.types import (
+    ToolCallRequestPart as ToolCall,
+)
 
 
 @dataclass
@@ -273,9 +252,6 @@ def _get_call_id(item: object) -> str | None:
 def _extract_reasoning_parts(
     item: ResponseReasoningItem | ResponseReasoningItemParam,
 ) -> list[ReasoningPart]:
-    if ReasoningPart is None:
-        return []
-
     parts: list[ReasoningPart] = []
     for block in _get_sequence(_get_field(item, "summary")):
         text = _get_field(block, "text")
@@ -338,10 +314,7 @@ def _get_input_message(item: object) -> InputMessage | None:
             ],
         )
 
-    if item_type == "reasoning" or (
-        ResponseReasoningItem is not None
-        and isinstance(item, ResponseReasoningItem)
-    ):
+    if item_type == "reasoning":
         parts = _extract_reasoning_parts(item)
         if not parts:
             return None
