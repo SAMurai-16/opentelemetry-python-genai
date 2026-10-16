@@ -32,6 +32,7 @@ from opentelemetry.test_util_genai.instrumentor import instrument
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.genai.types import (
     BlobPart,
+    FilePart,
     Modality,
     Text,
     UriPart,
@@ -815,6 +816,117 @@ def test_prepare_input_messages_object_parts():
             uri="https://example.com/obj.png",
         )
     ]
+
+
+def test_prepare_input_messages_input_text_and_output_text_parts():
+    messages = _prepare_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Hello"},
+                    {"type": "output_text", "text": "World"},
+                ],
+            }
+        ]
+    )
+    assert len(messages) == 1
+    assert messages[0].parts == [
+        Text(content="Hello"),
+        Text(content="World"),
+    ]
+
+
+def test_prepare_input_messages_audio_part():
+    import base64
+
+    audio_bytes = b"RIFF"
+    encoded = base64.b64encode(audio_bytes).decode()
+    messages = _prepare_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": encoded, "format": "wav"},
+                    }
+                ],
+            }
+        ]
+    )
+    assert len(messages) == 1
+    assert messages[0].parts == [
+        BlobPart(
+            mime_type="audio/wav",
+            modality=Modality.AUDIO,
+            content=audio_bytes,
+        )
+    ]
+
+
+def test_prepare_input_messages_audio_part_malformed_base64():
+    messages = _prepare_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": "!!!notbase64!!!",
+                            "format": "wav",
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    # Malformed audio is dropped; the message itself is still recorded with no parts.
+    assert len(messages) == 1
+    assert messages[0].parts == []
+
+
+def test_prepare_input_messages_file_part_with_file_id():
+    messages = _prepare_input_messages(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "file": {
+                            "file_id": "file-abc123",
+                            "filename": "doc.pdf",
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+    assert len(messages) == 1
+    assert messages[0].parts == [
+        FilePart(
+            mime_type="application/pdf",
+            modality=Modality.DOCUMENT,
+            file_id="file-abc123",
+        )
+    ]
+
+
+def test_prepare_input_messages_refusal_part():
+    messages = _prepare_input_messages(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "refusal", "refusal": "I cannot help with that."}
+                ],
+            }
+        ]
+    )
+    assert len(messages) == 1
+    assert messages[0].parts == [Text(content="I cannot help with that.")]
 
 
 def test_chat_completions_top_p_zero_and_max_tokens_zero(
