@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse

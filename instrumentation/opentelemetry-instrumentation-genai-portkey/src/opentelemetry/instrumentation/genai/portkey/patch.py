@@ -110,7 +110,7 @@ def _materialize_iterables(kwargs: dict[str, Any]) -> None:
             and isinstance(value, Iterable)
             and not isinstance(value, (str, bytes, Sequence, Mapping))
         ):
-            kwargs[key] = list(value)
+            kwargs[key] = list(cast(Iterable[object], value))
 
 
 def _sync_completions_create(
