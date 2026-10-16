@@ -33,6 +33,7 @@ from anthropic.types import (
     Usage,
 )
 
+from opentelemetry import trace
 from opentelemetry.instrumentation.genai.anthropic import (
     AnthropicInstrumentor,
     _raw_response,
@@ -533,6 +534,7 @@ def test_sync_messages_create_captures_multimodal_content(
 
 def test_sync_messages_create_preserves_generator_document_content(
     instrument_with_content,
+    span_exporter,
 ):
     received_content = None
 
@@ -585,6 +587,15 @@ def test_sync_messages_create_preserves_generator_document_content(
     assert received_content == [
         {"type": "text", "text": "First"},
         {"type": "text", "text": "Second"},
+    ]
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    messages = json.loads(
+        spans[0].attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert messages[0]["parts"] == [
+        {"type": "text", "content": "First"},
+        {"type": "text", "content": "Second"},
     ]
 
 
@@ -701,6 +712,34 @@ def test_sync_messages_create_connection_error(
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_MODEL] == model
     assert ErrorAttributes.ERROR_TYPE in span.attributes
     assert "APIConnectionError" in span.attributes[ErrorAttributes.ERROR_TYPE]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"messages": [{"content": "Hello"}]},
+        {"messages": [{"role": "user", "content": "Hi"}], "system": ["s"]},
+    ],
+    ids=["message_without_role", "system_as_strings"],
+)
+def test_sync_messages_create_malformed_request_reaches_the_client(
+    span_exporter, instrument_with_content, kwargs
+):
+    client = Anthropic(base_url="http://localhost:9999", max_retries=0)
+
+    # Content capture reads the messages and system prompt before the client
+    # sees them; these shapes made that extraction raise.
+    with pytest.raises(APIConnectionError):
+        client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=100,
+            timeout=0.1,
+            **kwargs,
+        )
+
+    (span,) = span_exporter.get_finished_spans()
+    assert "APIConnectionError" in span.attributes[ErrorAttributes.ERROR_TYPE]
+    assert not trace.get_current_span().get_span_context().is_valid
 
 
 @pytest.mark.vcr()
@@ -1390,14 +1429,9 @@ def test_sync_messages_create_tools_generator_reaches_the_sdk(
     _assert_weather_tool_definitions(spans[0])
 
 
-def test_sync_messages_stream_tools_generator_is_recorded(
+def test_sync_messages_stream_tools_generator_reaches_the_sdk(
     span_exporter, instrument_with_content
 ):
-    """``stream`` serializes the request before the invocation exists.
-
-    The generator has to be frozen in the wrapper, not while the invocation is
-    built, or the SDK drains it first and the span records no tools.
-    """
     seen = {}
 
     def respond(request):

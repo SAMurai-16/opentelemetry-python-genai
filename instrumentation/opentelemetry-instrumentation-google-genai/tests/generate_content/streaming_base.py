@@ -4,15 +4,18 @@
 import unittest
 
 from google.genai.types import (
+    GenerateContentConfig,
     GenerateContentResponseUsageMetadata,
     MediaModality,
     ModalityTokenCount,
 )
 
 from opentelemetry import context as context_api
+from opentelemetry import trace
 from opentelemetry.instrumentation.google_genai import (
     GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY,
 )
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 
 from .base import TestCase
 
@@ -32,6 +35,58 @@ class StreamingTestCase(TestCase):
     @property
     def expected_function_name(self):
         raise NotImplementedError("Must implement 'expected_function_name'.")
+
+    def test_tuple_contents(self):
+        self.configure_valid_response(text="Yep, it works!")
+        response = self.generate_content(
+            model="gemini-2.0-flash", contents=("Hello", "world")
+        )
+        for _ in response:
+            pass
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
+
+    def test_empty_tuple_contents_mimics_sdk_error(self):
+        with self.assertRaises(ValueError):
+            response = self.generate_content(
+                model="gemini-2.0-flash", contents=()
+            )
+            for _ in response:
+                pass
+
+    def test_tuple_system_instruction(self):
+        self.configure_valid_response(text="Yep, it works!")
+        response = self.generate_content(
+            model="gemini-2.0-flash",
+            contents="Hello",
+            config=GenerateContentConfig(system_instruction=("Be polite",)),
+        )
+        for _ in response:
+            pass
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_SYSTEM_INSTRUCTIONS],
+            '[{"content":"Be polite","type":"text"}]',
+        )
+
+    def test_mixed_tuple_contents(self):
+        self.configure_valid_response(text="Yep, it works!")
+        from google.genai.types import Part
+
+        response = self.generate_content(
+            model="gemini-2.0-flash",
+            contents=("Hello", Part.from_text(text="world")),
+        )
+        for _ in response:
+            pass
+        span = self.otel.get_span_named("generate_content gemini-2.0-flash")
+        self.assertEqual(
+            span.attributes[gen_ai_attributes.GEN_AI_INPUT_MESSAGES],
+            '[{"role":"user","parts":[{"content":"Hello","type":"text"},{"content":"world","type":"text"}],"name":null}]',
+        )
 
     def test_instrumentation_does_not_break_core_functionality(self):
         self.configure_valid_response(text="Yep, it works!")
@@ -65,6 +120,20 @@ class StreamingTestCase(TestCase):
             )
         finally:
             context_api.detach(tok)
+
+    def _assert_contents_leave_no_open_invocation(self, contents):
+        self.configure_valid_response(text="Yep, it works!")
+        self.generate_content(model="gemini-2.0-flash", contents=contents)
+        self.otel.assert_has_span_named("generate_content gemini-2.0-flash")
+        self.assertFalse(trace.get_current_span().get_span_context().is_valid)
+
+    def test_malformed_contents_do_not_leave_the_invocation_open(self):
+        # Content capture converted `contents` before the SDK saw them, and
+        # that conversion raised on None.
+        self._assert_contents_leave_no_open_invocation(None)
+
+    def test_empty_contents_do_not_leave_the_invocation_open(self):
+        self._assert_contents_leave_no_open_invocation([])
 
     def test_handles_multiple_responses(self):
         self.configure_valid_response(text="First response")
