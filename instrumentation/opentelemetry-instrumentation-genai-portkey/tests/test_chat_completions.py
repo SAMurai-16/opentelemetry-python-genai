@@ -635,6 +635,105 @@ def test_chat_completions_generator_content_not_consumed(
         ]
 
 
+def test_chat_completions_generator_messages_and_tools_materialized(
+    tracer_provider, logger_provider, meter_provider, span_exporter
+):
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+        content_capture="SPAN_ONLY",
+    ):
+        p = Portkey(api_key="test_pk", provider="openai")
+        mock_resp = _create_mock_chat_completion()
+        _setup_mock_chat(p, mock_resp)
+
+        raw_msgs = [{"role": "user", "content": "Hello"}]
+        raw_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        p.chat.completions.create(
+            messages=(m for m in raw_msgs),
+            tools=(t for t in raw_tools),
+            model="gpt-4o",
+        )
+
+        spans = span_exporter.get_finished_spans()
+        assert len(spans) == 1
+        span = spans[0]
+        input_messages = json.loads(
+            span.attributes.get(GenAIAttributes.GEN_AI_INPUT_MESSAGES)
+        )
+        assert len(input_messages) == 1
+        assert input_messages[0]["parts"] == [
+            {"content": "Hello", "type": "text"}
+        ]
+
+        tool_defs = json.loads(
+            span.attributes.get(GenAIAttributes.GEN_AI_TOOL_DEFINITIONS)
+        )
+        assert len(tool_defs) == 1
+        assert tool_defs[0]["name"] == "get_weather"
+
+        # Check what the mocked SDK received: messages and tools should be lists
+        if hasattr(p.chat.completions, "openai_client"):
+            call_args = p.chat.completions.openai_client.with_raw_response.chat.completions.create.call_args
+            assert isinstance(call_args.kwargs["messages"], list)
+            assert call_args.kwargs["messages"] == raw_msgs
+            extra_body = call_args.kwargs.get("extra_body", {})
+            assert isinstance(extra_body.get("tools"), list)
+            assert extra_body["tools"] == raw_tools
+
+
+def test_chat_completions_generator_tools_materialized_without_content_capture(
+    tracer_provider, logger_provider, meter_provider, span_exporter
+):
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+    ):
+        p = Portkey(api_key="test_pk", provider="openai")
+        mock_resp = _create_mock_chat_completion()
+        _setup_mock_chat(p, mock_resp)
+
+        raw_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+        p.chat.completions.create(
+            messages=[{"role": "user", "content": "Hello"}],
+            tools=(t for t in raw_tools),
+            model="gpt-4o",
+        )
+
+        spans = span_exporter.get_finished_spans()
+        assert len(spans) == 1
+
+        if hasattr(p.chat.completions, "openai_client"):
+            call_args = p.chat.completions.openai_client.with_raw_response.chat.completions.create.call_args
+            extra_body = call_args.kwargs.get("extra_body", {})
+            assert isinstance(extra_body.get("tools"), list)
+            assert extra_body["tools"] == raw_tools
+
+
 def test_chat_completions_image_parts(
     tracer_provider, logger_provider, meter_provider, span_exporter
 ):
