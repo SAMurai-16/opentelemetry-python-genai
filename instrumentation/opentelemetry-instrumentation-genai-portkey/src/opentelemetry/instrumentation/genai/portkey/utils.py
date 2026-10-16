@@ -147,8 +147,7 @@ def _extract_tool_calls(tool_calls: Iterable[Any]) -> list[ToolCallRequest]:
     return parts
 
 
-# OpenAI accepts "wav" and "mp3" for input_audio. "audio/mp3" is not a
-# registered media type - the payload is MPEG audio.
+# "audio/mp3" is not a registered media type - the payload is MPEG audio.
 _AUDIO_MIME_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
 
 
@@ -223,8 +222,6 @@ def _content_part_to_message_part(item: Any) -> MessagePart | None:
     if part_type == "input_audio":
         return _audio_to_part(get_property_value(item, "input_audio"))
     if part_type in ("file", "input_file"):
-        # Chat Completions nests the descriptor under "file"; the
-        # Responses API carries the same fields on the part itself.
         return _document_to_part(get_property_value(item, "file") or item)
     if part_type == "refusal":
         refusal = get_property_value(item, "refusal")
