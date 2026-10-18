@@ -433,6 +433,7 @@ def test_model_kwargs_win_over_call_kwargs(
         ({}, ("<end>",)),
         # An explicit `stop` overrides the stop_sequences argument.
         ({"stop": ["STOP"]}, ("STOP",)),
+        ({"stop": ("STOP",)}, ("STOP",)),
         # The model-level sentinel pops the `stop` that
         # _prepare_completion_kwargs seeded from stop_sequences, leaving the
         # request with none.
@@ -457,6 +458,16 @@ def test_stop_sequences_follow_what_is_sent(
 
     (span,) = spans_by_operation(span_exporter.get_finished_spans(), "chat")
     assert attr(span, GenAI.GEN_AI_REQUEST_STOP_SEQUENCES) == expected
+
+
+def test_stop_sequences_as_tuple_argument(
+    instrument_with_content, span_exporter
+) -> None:
+    model = mlx_model()
+    model.generate(messages=MESSAGES, stop_sequences=("<end>",))
+
+    (span,) = spans_by_operation(span_exporter.get_finished_spans(), "chat")
+    assert attr(span, GenAI.GEN_AI_REQUEST_STOP_SEQUENCES) == ("<end>",)
 
 
 def test_stop_sequences_a_model_cannot_send_are_not_recorded(
