@@ -45,7 +45,13 @@ _has_async_portkey = AsyncPortkey is not None
 
 
 def _consume_chat_request(*args: Any, **kwargs: Any) -> None:
-    messages = kwargs.get("messages")
+    body = kwargs.get("body") or kwargs.get("json")
+    if not isinstance(body, dict):
+        if len(args) > 1 and isinstance(args[1], dict):
+            body = args[1]
+        else:
+            body = kwargs
+    messages = body.get("messages")
     if (
         messages is not None
         and isinstance(messages, Iterable)
@@ -67,9 +73,9 @@ def _consume_chat_request(*args: Any, **kwargs: Any) -> None:
                     and not isinstance(tool_calls, (str, bytes))
                 ):
                     list(tool_calls)
-    tools = kwargs.get("tools")
+    tools = body.get("tools")
     if tools is None:
-        extra_body = kwargs.get("extra_body")
+        extra_body = body.get("extra_body")
         if isinstance(extra_body, dict):
             tools = extra_body.get("tools")
     if (
@@ -749,9 +755,18 @@ def test_chat_completions_generator_content_captured(
 
         if hasattr(p.chat.completions, "openai_client"):
             call_args = p.chat.completions.openai_client.with_raw_response.chat.completions.create.call_args
-            received_content = call_args.kwargs["messages"][0]["content"]
-            assert not isinstance(received_content, list)
-            assert isinstance(received_content, Iterator)
+            received_messages = call_args.kwargs["messages"]
+        else:
+            call_args = p.chat.completions._post.call_args
+            body = (
+                call_args.kwargs.get("body")
+                if isinstance(call_args.kwargs.get("body"), dict)
+                else call_args.kwargs
+            )
+            received_messages = body["messages"]
+        received_content = received_messages[0]["content"]
+        assert not isinstance(received_content, list)
+        assert isinstance(received_content, Iterator)
 
 
 def test_chat_completions_generator_messages_and_tools_captured(
@@ -807,11 +822,22 @@ def test_chat_completions_generator_messages_and_tools_captured(
         # but iterators wrapped by IteratorCapture.
         if hasattr(p.chat.completions, "openai_client"):
             call_args = p.chat.completions.openai_client.with_raw_response.chat.completions.create.call_args
-            assert not isinstance(call_args.kwargs["messages"], list)
-            assert isinstance(call_args.kwargs["messages"], Iterator)
+            received_messages = call_args.kwargs["messages"]
             extra_body = call_args.kwargs.get("extra_body", {})
-            assert not isinstance(extra_body.get("tools"), list)
-            assert isinstance(extra_body.get("tools"), Iterator)
+            received_tools = extra_body.get("tools")
+        else:
+            call_args = p.chat.completions._post.call_args
+            body = (
+                call_args.kwargs.get("body")
+                if isinstance(call_args.kwargs.get("body"), dict)
+                else call_args.kwargs
+            )
+            received_messages = body["messages"]
+            received_tools = body.get("tools")
+        assert not isinstance(received_messages, list)
+        assert isinstance(received_messages, Iterator)
+        assert not isinstance(received_tools, list)
+        assert isinstance(received_tools, Iterator)
 
 
 def test_chat_completions_generator_tools_not_consumed_without_content_capture(
@@ -847,20 +873,39 @@ def test_chat_completions_generator_tools_not_consumed_without_content_capture(
                 yield t
 
         sdk_received_tools_generator = False
-        original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
 
-        def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+        def check_sdk_tools(*args: Any, **kwargs: Any) -> None:
             nonlocal sdk_received_tools_generator
-            extra_body = kwargs.get("extra_body", {})
-            tools = extra_body.get("tools")
+            body = (
+                kwargs.get("body")
+                if isinstance(kwargs.get("body"), dict)
+                else kwargs
+            )
+            tools = body.get("tools")
+            if tools is None and isinstance(body.get("extra_body"), dict):
+                tools = body["extra_body"].get("tools")
             if (
                 isinstance(tools, GeneratorType)
                 and not tools_consumed_before_sdk
             ):
                 sdk_received_tools_generator = True
-            return original_side_effect(*args, **kwargs)
 
-        p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        if hasattr(p.chat.completions, "openai_client"):
+            original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
+
+            def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tools(*args, **kwargs)
+                return original_side_effect(*args, **kwargs)
+
+            p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        else:
+            original_post_side_effect = p.chat.completions._post.side_effect
+
+            def check_post_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tools(*args, **kwargs)
+                return original_post_side_effect(*args, **kwargs)
+
+            p.chat.completions._post.side_effect = check_post_entry
 
         p.chat.completions.create(
             messages=[{"role": "user", "content": "Hello"}],
@@ -941,12 +986,20 @@ def test_chat_completions_nested_generators_captured(
         if hasattr(p.chat.completions, "openai_client"):
             call_args = p.chat.completions.openai_client.with_raw_response.chat.completions.create.call_args
             received_messages = call_args.kwargs["messages"]
-            received_content = received_messages[0]["content"]
-            assert not isinstance(received_content, list)
-            assert isinstance(received_content, Iterator)
-            received_tool_calls = received_messages[1]["tool_calls"]
-            assert not isinstance(received_tool_calls, list)
-            assert isinstance(received_tool_calls, Iterator)
+        else:
+            call_args = p.chat.completions._post.call_args
+            body = (
+                call_args.kwargs.get("body")
+                if isinstance(call_args.kwargs.get("body"), dict)
+                else call_args.kwargs
+            )
+            received_messages = body["messages"]
+        received_content = received_messages[0]["content"]
+        assert not isinstance(received_content, list)
+        assert isinstance(received_content, Iterator)
+        received_tool_calls = received_messages[1]["tool_calls"]
+        assert not isinstance(received_tool_calls, list)
+        assert isinstance(received_tool_calls, Iterator)
 
 
 def test_chat_completions_generator_tool_calls_reaches_the_sdk(
@@ -983,11 +1036,15 @@ def test_chat_completions_generator_tool_calls_reaches_the_sdk(
                 yield c
 
         sdk_received_tool_calls_iterator = False
-        original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
 
-        def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+        def check_sdk_tool_calls(*args: Any, **kwargs: Any) -> None:
             nonlocal sdk_received_tool_calls_iterator
-            msgs = kwargs.get("messages", [])
+            body = (
+                kwargs.get("body")
+                if isinstance(kwargs.get("body"), dict)
+                else kwargs
+            )
+            msgs = body.get("messages", [])
             for m in msgs:
                 tc = m.get("tool_calls") if isinstance(m, dict) else None
                 if tc is not None:
@@ -997,9 +1054,23 @@ def test_chat_completions_generator_tool_calls_reaches_the_sdk(
                         and not tool_calls_drained_before_sdk
                     ):
                         sdk_received_tool_calls_iterator = True
-            return original_side_effect(*args, **kwargs)
 
-        p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        if hasattr(p.chat.completions, "openai_client"):
+            original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
+
+            def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tool_calls(*args, **kwargs)
+                return original_side_effect(*args, **kwargs)
+
+            p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        else:
+            original_post_side_effect = p.chat.completions._post.side_effect
+
+            def check_post_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tool_calls(*args, **kwargs)
+                return original_post_side_effect(*args, **kwargs)
+
+            p.chat.completions._post.side_effect = check_post_entry
 
         p.chat.completions.create(
             messages=[
@@ -1064,11 +1135,15 @@ def test_chat_completions_generator_tool_calls_not_consumed_without_content_capt
                 yield c
 
         sdk_received_raw_generator = False
-        original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
 
-        def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+        def check_sdk_tool_calls(*args: Any, **kwargs: Any) -> None:
             nonlocal sdk_received_raw_generator
-            msgs = kwargs.get("messages", [])
+            body = (
+                kwargs.get("body")
+                if isinstance(kwargs.get("body"), dict)
+                else kwargs
+            )
+            msgs = body.get("messages", [])
             for m in msgs:
                 tc = m.get("tool_calls") if isinstance(m, dict) else None
                 if tc is not None:
@@ -1077,9 +1152,23 @@ def test_chat_completions_generator_tool_calls_not_consumed_without_content_capt
                         and not tool_calls_drained_before_sdk
                     ):
                         sdk_received_raw_generator = True
-            return original_side_effect(*args, **kwargs)
 
-        p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        if hasattr(p.chat.completions, "openai_client"):
+            original_side_effect = p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect
+
+            def check_sdk_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tool_calls(*args, **kwargs)
+                return original_side_effect(*args, **kwargs)
+
+            p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = check_sdk_entry
+        else:
+            original_post_side_effect = p.chat.completions._post.side_effect
+
+            def check_post_entry(*args: Any, **kwargs: Any) -> Any:
+                check_sdk_tool_calls(*args, **kwargs)
+                return original_post_side_effect(*args, **kwargs)
+
+            p.chat.completions._post.side_effect = check_post_entry
 
         p.chat.completions.create(
             messages=[
