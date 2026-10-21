@@ -36,6 +36,14 @@ from opentelemetry.util.genai.utils import decode_base64, image_from_url
 if TYPE_CHECKING:
     from portkey_ai import AsyncPortkey, Portkey
 
+__all__ = [
+    "_prepare_input_messages",
+    "_prepare_tool_definitions",
+    "create_inference_invocation",
+    "is_streaming",
+    "set_response_properties",
+]
+
 # Mapping from Portkey ``provider`` values to the well-known
 # ``gen_ai.provider.name`` values defined by the GenAI semantic conventions.
 _PROVIDER_NAME_OVERRIDES: dict[str, str] = {
@@ -232,7 +240,11 @@ def _content_part_to_message_part(item: Any) -> MessagePart | None:
     return None
 
 
-def _prepare_input_messages(messages: Iterable[Any]) -> list[InputMessage]:
+def _prepare_input_messages(
+    messages: Iterable[Any] | None,
+) -> list[InputMessage]:
+    if not messages:
+        return []
     chat_messages: list[InputMessage] = []
     for message in messages:
         role = get_property_value(message, "role")
@@ -259,7 +271,6 @@ def _prepare_input_messages(messages: Iterable[Any]) -> list[InputMessage]:
             elif isinstance(content, Sequence) and not isinstance(
                 content, (bytes, bytearray)
             ):
-                # Iterating a generator drains it and leaves the request with no content.
                 for item in cast(Sequence[Any], content):
                     part = _content_part_to_message_part(item)
                     if part is not None:
@@ -347,7 +358,6 @@ def _as_int(value: Any) -> int | None:
 def _apply_request_parameters(
     invocation: InferenceInvocation,
     kwargs: dict[str, Any],
-    capture_content: bool,
 ) -> None:
     if (temp := get_value(kwargs.get("temperature"))) is not None:
         invocation.temperature = _as_float(temp)
@@ -408,19 +418,6 @@ def _apply_request_parameters(
             else:
                 invocation.output_type = response_format
 
-    tools = kwargs.get("tools")
-    if tools is not None and isinstance(tools, Iterable):
-        invocation.tool_definitions = _prepare_tool_definitions(
-            cast(Iterable[Any], tools)
-        )
-
-    if capture_content:
-        messages = kwargs.get("messages")
-        if messages is not None and isinstance(messages, Iterable):
-            invocation.input_messages = _prepare_input_messages(
-                cast(Iterable[Any], messages)
-            )
-
 
 def create_inference_invocation(
     handler: TelemetryHandler,
@@ -451,7 +448,7 @@ def create_inference_invocation(
                 prompt_id
             )
 
-    _apply_request_parameters(invocation, kwargs, capture_content)
+    _apply_request_parameters(invocation, kwargs)
     return invocation
 
 

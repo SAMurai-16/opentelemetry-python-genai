@@ -6,18 +6,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import (
-    Awaitable,
-    Callable,
-    Iterable,
-    Mapping,
-    Sequence,
-)
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from wrapt import wrap_function_wrapper
 
 from opentelemetry.instrumentation.genai.portkey.utils import (
+    _prepare_input_messages,
+    _prepare_tool_definitions,
     create_inference_invocation,
     is_streaming,
     set_response_properties,
@@ -28,6 +24,7 @@ from opentelemetry.instrumentation.genai.portkey.wrappers import (
 )
 from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.util.genai.handler import TelemetryHandler
+from opentelemetry.util.genai.iterator_capture import IteratorCapture
 
 logger = logging.getLogger(__name__)
 
@@ -91,28 +88,6 @@ def unpatch_portkey() -> None:
         pass
 
 
-_ITERABLE_KWARGS = ("messages", "tools")
-
-
-def _materialize_iterables(kwargs: dict[str, Any]) -> None:
-    """Materialize any generator passed as messages or tools.
-
-    The SDK accepts any iterable for these arguments and consumes it during the
-    call.  Instrumentation reads the same kwargs *before* the wrapped call, so
-    a generator would be drained by telemetry and the SDK would receive an
-    exhausted iterator.  Converting to a list once lets both sides see the same
-    data without changing the caller's observable behaviour.
-    """
-    for key in _ITERABLE_KWARGS:
-        value = kwargs.get(key)
-        if (
-            value is not None
-            and isinstance(value, Iterable)
-            and not isinstance(value, (str, bytes, Sequence, Mapping))
-        ):
-            kwargs[key] = list(cast(Iterable[object], value))
-
-
 def _sync_completions_create(
     handler: TelemetryHandler,
     *,
@@ -126,12 +101,32 @@ def _sync_completions_create(
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        _materialize_iterables(kwargs)
+        messages_capture = IteratorCapture.from_property(
+            kwargs, "messages", enabled=capture_content
+        )
+        tools_capture = IteratorCapture.from_property(
+            kwargs, "tools", enabled=capture_content
+        )
         invocation = create_inference_invocation(
             handler, instance, kwargs, capture_content, is_prompt=is_prompt
         )
         try:
-            result = wrapped(*args, **kwargs)
+            try:
+                result = wrapped(*args, **kwargs)
+            finally:
+                if capture_content:
+                    if (
+                        msgs := messages_capture.extract(
+                            _prepare_input_messages
+                        )
+                    ) is not None:
+                        invocation.input_messages = msgs
+                    if (
+                        defs := tools_capture.extract(
+                            _prepare_tool_definitions
+                        )
+                    ) is not None:
+                        invocation.tool_definitions = defs
             if is_streaming(kwargs):
                 return PortkeyStreamWrapper(
                     result, invocation, capture_content
@@ -160,12 +155,32 @@ def _async_completions_create(
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
-        _materialize_iterables(kwargs)
+        messages_capture = IteratorCapture.from_property(
+            kwargs, "messages", enabled=capture_content
+        )
+        tools_capture = IteratorCapture.from_property(
+            kwargs, "tools", enabled=capture_content
+        )
         invocation = create_inference_invocation(
             handler, instance, kwargs, capture_content, is_prompt=is_prompt
         )
         try:
-            result = await wrapped(*args, **kwargs)
+            try:
+                result = await wrapped(*args, **kwargs)
+            finally:
+                if capture_content:
+                    if (
+                        msgs := messages_capture.extract(
+                            _prepare_input_messages
+                        )
+                    ) is not None:
+                        invocation.input_messages = msgs
+                    if (
+                        defs := tools_capture.extract(
+                            _prepare_tool_definitions
+                        )
+                    ) is not None:
+                        invocation.tool_definitions = defs
             if is_streaming(kwargs):
                 return AsyncPortkeyStreamWrapper(
                     result, invocation, capture_content
