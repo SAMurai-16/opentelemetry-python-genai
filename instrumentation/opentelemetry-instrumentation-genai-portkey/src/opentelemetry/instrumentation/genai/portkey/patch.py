@@ -12,10 +12,10 @@ from typing import Any, cast
 from wrapt import wrap_function_wrapper
 
 from opentelemetry.instrumentation.genai.portkey.utils import (
-    _prepare_input_messages,
-    _prepare_tool_definitions,
     create_inference_invocation,
     is_streaming,
+    prepare_input_messages,
+    prepare_tool_definitions,
     set_response_properties,
 )
 from opentelemetry.instrumentation.genai.portkey.wrappers import (
@@ -108,25 +108,18 @@ def _sync_completions_create(
             kwargs, "tools", enabled=capture_content
         )
         invocation = create_inference_invocation(
-            handler, instance, kwargs, capture_content, is_prompt=is_prompt
+            handler, instance, kwargs, is_prompt=is_prompt
         )
         try:
             try:
                 result = wrapped(*args, **kwargs)
             finally:
-                if capture_content:
-                    if (
-                        msgs := messages_capture.extract(
-                            _prepare_input_messages
-                        )
-                    ) is not None:
-                        invocation.input_messages = msgs
-                    if (
-                        defs := tools_capture.extract(
-                            _prepare_tool_definitions
-                        )
-                    ) is not None:
-                        invocation.tool_definitions = defs
+                invocation.input_messages = (
+                    messages_capture.extract(prepare_input_messages) or []
+                )
+                invocation.tool_definitions = tools_capture.extract(
+                    prepare_tool_definitions
+                )
             if is_streaming(kwargs):
                 return PortkeyStreamWrapper(
                     result, invocation, capture_content
@@ -162,25 +155,18 @@ def _async_completions_create(
             kwargs, "tools", enabled=capture_content
         )
         invocation = create_inference_invocation(
-            handler, instance, kwargs, capture_content, is_prompt=is_prompt
+            handler, instance, kwargs, is_prompt=is_prompt
         )
         try:
             try:
                 result = await wrapped(*args, **kwargs)
             finally:
-                if capture_content:
-                    if (
-                        msgs := messages_capture.extract(
-                            _prepare_input_messages
-                        )
-                    ) is not None:
-                        invocation.input_messages = msgs
-                    if (
-                        defs := tools_capture.extract(
-                            _prepare_tool_definitions
-                        )
-                    ) is not None:
-                        invocation.tool_definitions = defs
+                invocation.input_messages = (
+                    messages_capture.extract(prepare_input_messages) or []
+                )
+                invocation.tool_definitions = tools_capture.extract(
+                    prepare_tool_definitions
+                )
             if is_streaming(kwargs):
                 return AsyncPortkeyStreamWrapper(
                     result, invocation, capture_content

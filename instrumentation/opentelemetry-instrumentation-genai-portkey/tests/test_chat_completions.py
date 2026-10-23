@@ -21,9 +21,6 @@ except ImportError:
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.genai.portkey import PortkeyInstrumentor
-from opentelemetry.instrumentation.genai.portkey.utils import (
-    _prepare_input_messages,
-)
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
 )
@@ -33,13 +30,6 @@ from opentelemetry.semconv._incubating.attributes import (
 from opentelemetry.semconv.attributes import server_attributes
 from opentelemetry.test_util_genai.instrumentor import instrument
 from opentelemetry.trace import StatusCode
-from opentelemetry.util.genai.types import (
-    BlobPart,
-    FilePart,
-    Modality,
-    Text,
-    UriPart,
-)
 
 _has_async_portkey = AsyncPortkey is not None
 
@@ -1250,6 +1240,120 @@ async def test_async_chat_completions_generator_messages_and_tools_captured(
             assert isinstance(extra_body.get("tools"), Iterator)
 
 
+def test_chat_completions_generator_messages_captured_on_error(
+    tracer_provider, logger_provider, meter_provider, span_exporter
+):
+    def consume_then_fail(*args: Any, **kwargs: Any) -> Any:
+        _consume_chat_request(*args, **kwargs)
+        raise RuntimeError("boom")
+
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+        content_capture="SPAN_ONLY",
+    ):
+        p = Portkey(api_key="test_pk", provider="openai")
+        if hasattr(p.chat.completions, "openai_client"):
+            p.chat.completions.openai_client = MagicMock()
+            p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = consume_then_fail
+        p.chat.completions._post = MagicMock(side_effect=consume_then_fail)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            p.chat.completions.create(
+                messages=(m for m in [{"role": "user", "content": "Hello"}]),
+                model="gpt-4o",
+            )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "RuntimeError"
+    input_messages = json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert input_messages[0]["parts"] == [{"type": "text", "content": "Hello"}]
+
+
+def test_chat_completions_generator_messages_captured_on_streaming_error(
+    tracer_provider, logger_provider, meter_provider, span_exporter
+):
+    def consume_then_fail(*args: Any, **kwargs: Any) -> Any:
+        _consume_chat_request(*args, **kwargs)
+        raise RuntimeError("boom")
+
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+        content_capture="SPAN_ONLY",
+    ):
+        p = Portkey(api_key="test_pk", provider="openai")
+        if hasattr(p.chat.completions, "openai_client"):
+            p.chat.completions.openai_client = MagicMock()
+            p.chat.completions.openai_client.chat.completions.create.side_effect = consume_then_fail
+            p.chat.completions.openai_client.with_raw_response.chat.completions.create.side_effect = consume_then_fail
+        p.chat.completions._post = MagicMock(side_effect=consume_then_fail)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            p.chat.completions.create(
+                messages=(m for m in [{"role": "user", "content": "Hello"}]),
+                model="gpt-4o",
+                stream=True,
+            )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "RuntimeError"
+    input_messages = json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert input_messages[0]["parts"] == [{"type": "text", "content": "Hello"}]
+
+
+@pytest.mark.skipif(
+    not _has_async_portkey, reason="AsyncPortkey not available"
+)
+@pytest.mark.asyncio
+async def test_async_chat_completions_generator_messages_captured_on_streaming_error(
+    tracer_provider, logger_provider, meter_provider, span_exporter
+):
+    def consume_then_fail(*args: Any, **kwargs: Any) -> Any:
+        _consume_chat_request(*args, **kwargs)
+        raise RuntimeError("async boom")
+
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+        content_capture="SPAN_ONLY",
+    ):
+        ap = AsyncPortkey(api_key="test_pk", provider="openai")
+        if hasattr(ap.chat.completions, "openai_client"):
+            ap.chat.completions.openai_client = MagicMock()
+            ap.chat.completions.openai_client.chat.completions.create = (
+                AsyncMock(side_effect=consume_then_fail)
+            )
+            ap.chat.completions.openai_client.with_raw_response.chat.completions.create = AsyncMock(
+                side_effect=consume_then_fail
+            )
+        ap.chat.completions._post = AsyncMock(side_effect=consume_then_fail)
+
+        with pytest.raises(RuntimeError, match="async boom"):
+            await ap.chat.completions.create(
+                messages=(m for m in [{"role": "user", "content": "Hello"}]),
+                model="gpt-4o",
+                stream=True,
+            )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes[ErrorAttributes.ERROR_TYPE] == "RuntimeError"
+    input_messages = json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
+    )
+    assert input_messages[0]["parts"] == [{"type": "text", "content": "Hello"}]
+
+
 def test_chat_completions_image_parts(
     tracer_provider, logger_provider, meter_provider, span_exporter
 ):
@@ -1335,213 +1439,96 @@ def test_chat_completions_image_parts(
         ]
 
 
-def test_prepare_input_messages_generator_content_not_consumed():
-    generator_content = ({"type": "text", "text": "hello"} for _ in range(1))
-    messages = _prepare_input_messages(
-        [{"role": "user", "content": generator_content}]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == []
-    # Generator should remain untouched
-    assert list(generator_content) == [{"type": "text", "text": "hello"}]
-
-
-def test_prepare_input_messages_iterator_content_not_consumed():
-    iterator_content = iter([{"type": "text", "text": "hello"}])
-    messages = _prepare_input_messages(
-        [{"role": "user", "content": iterator_content}]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == []
-    # Iterator should remain untouched
-    assert list(iterator_content) == [{"type": "text", "text": "hello"}]
-
-
-def test_prepare_input_messages_bytes_content_ignored():
-    messages = _prepare_input_messages(
-        [{"role": "user", "content": b"not a sequence of parts"}]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == []
-
-
-def test_prepare_input_messages_image_parts():
-    messages = _prepare_input_messages(
-        [
+@pytest.mark.parametrize(
+    ("content_part", "expected"),
+    [
+        (
             {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Before"},
-                    {
-                        "type": "image_url",
-                        "image_url": "https://example.com/img1.png",
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "https://example.com/img2.png"},
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,QUJD"},
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,invalid!"},
-                    },
-                    {"type": "unknown_type", "data": "foo"},
-                    "After",
-                ],
-            }
-        ]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == [
-        Text(content="Before"),
-        UriPart(
-            mime_type=None,
-            modality=Modality.IMAGE,
-            uri="https://example.com/img1.png",
+                "type": "input_audio",
+                "input_audio": {"data": "UklGRg==", "format": "wav"},
+            },
+            [
+                {
+                    "type": "blob",
+                    "modality": "audio",
+                    "mime_type": "audio/wav",
+                    "content": "UklGRg==",
+                }
+            ],
         ),
-        UriPart(
-            mime_type=None,
-            modality=Modality.IMAGE,
-            uri="https://example.com/img2.png",
+        (
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": "!!!notbase64!!!",
+                    "format": "wav",
+                },
+            },
+            [],
         ),
-        BlobPart(
-            mime_type="image/png",
-            modality=Modality.IMAGE,
-            content=b"ABC",
+        (
+            {
+                "type": "file",
+                "file": {"file_id": "file-abc123", "filename": "doc.pdf"},
+            },
+            [
+                {
+                    "type": "file",
+                    "modality": "document",
+                    "mime_type": "application/pdf",
+                    "file_id": "file-abc123",
+                }
+            ],
         ),
-        Text(content="After"),
-    ]
-
-
-def test_prepare_input_messages_object_parts():
-    part_obj = SimpleNamespace(
-        type="image_url",
-        image_url=SimpleNamespace(url="https://example.com/obj.png"),
-    )
-    msg_obj = SimpleNamespace(role="user", content=[part_obj])
-    messages = _prepare_input_messages([msg_obj])
-    assert len(messages) == 1
-    assert messages[0].parts == [
-        UriPart(
-            mime_type=None,
-            modality=Modality.IMAGE,
-            uri="https://example.com/obj.png",
+        (
+            {"type": "refusal", "refusal": "I cannot help with that."},
+            [{"type": "text", "content": "I cannot help with that."}],
+        ),
+        (
+            {
+                "type": "image_url",
+                "image_url": SimpleNamespace(
+                    url="https://example.com/obj.png"
+                ),
+            },
+            [
+                {
+                    "type": "uri",
+                    "modality": "image",
+                    "mime_type": None,
+                    "uri": "https://example.com/obj.png",
+                }
+            ],
+        ),
+    ],
+)
+def test_chat_completions_content_parts(
+    content_part,
+    expected,
+    tracer_provider,
+    logger_provider,
+    meter_provider,
+    span_exporter,
+):
+    with instrument(
+        PortkeyInstrumentor(),
+        tracer_provider=tracer_provider,
+        logger_provider=logger_provider,
+        meter_provider=meter_provider,
+        content_capture="SPAN_ONLY",
+    ):
+        p = Portkey(api_key="test_pk", provider="openai")
+        _setup_mock_chat(p, _create_mock_chat_completion())
+        p.chat.completions.create(
+            messages=[{"role": "assistant", "content": [content_part]}],
+            model="gpt-4o",
         )
-    ]
 
-
-def test_prepare_input_messages_input_text_and_output_text_parts():
-    messages = _prepare_input_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "Hello"},
-                    {"type": "output_text", "text": "World"},
-                ],
-            }
-        ]
+    span = span_exporter.get_finished_spans()[0]
+    messages = json.loads(
+        span.attributes[GenAIAttributes.GEN_AI_INPUT_MESSAGES]
     )
-    assert len(messages) == 1
-    assert messages[0].parts == [
-        Text(content="Hello"),
-        Text(content="World"),
-    ]
-
-
-def test_prepare_input_messages_audio_part():
-    import base64
-
-    audio_bytes = b"RIFF"
-    encoded = base64.b64encode(audio_bytes).decode()
-    messages = _prepare_input_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {"data": encoded, "format": "wav"},
-                    }
-                ],
-            }
-        ]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == [
-        BlobPart(
-            mime_type="audio/wav",
-            modality=Modality.AUDIO,
-            content=audio_bytes,
-        )
-    ]
-
-
-def test_prepare_input_messages_audio_part_malformed_base64():
-    messages = _prepare_input_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": "!!!notbase64!!!",
-                            "format": "wav",
-                        },
-                    }
-                ],
-            }
-        ]
-    )
-    # Malformed audio is dropped; the message itself is still recorded with no parts.
-    assert len(messages) == 1
-    assert messages[0].parts == []
-
-
-def test_prepare_input_messages_file_part_with_file_id():
-    messages = _prepare_input_messages(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "file",
-                        "file": {
-                            "file_id": "file-abc123",
-                            "filename": "doc.pdf",
-                        },
-                    }
-                ],
-            }
-        ]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == [
-        FilePart(
-            mime_type="application/pdf",
-            modality=Modality.DOCUMENT,
-            file_id="file-abc123",
-        )
-    ]
-
-
-def test_prepare_input_messages_refusal_part():
-    messages = _prepare_input_messages(
-        [
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "refusal", "refusal": "I cannot help with that."}
-                ],
-            }
-        ]
-    )
-    assert len(messages) == 1
-    assert messages[0].parts == [Text(content="I cannot help with that.")]
+    assert messages[0]["parts"] == expected
 
 
 def test_chat_completions_top_p_zero_and_max_tokens_zero(

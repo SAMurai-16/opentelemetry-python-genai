@@ -36,13 +36,6 @@ from opentelemetry.util.genai.utils import decode_base64, image_from_url
 if TYPE_CHECKING:
     from portkey_ai import AsyncPortkey, Portkey
 
-__all__ = [
-    "_prepare_input_messages",
-    "_prepare_tool_definitions",
-    "create_inference_invocation",
-    "is_streaming",
-    "set_response_properties",
-]
 
 # Mapping from Portkey ``provider`` values to the well-known
 # ``gen_ai.provider.name`` values defined by the GenAI semantic conventions.
@@ -240,7 +233,7 @@ def _content_part_to_message_part(item: Any) -> MessagePart | None:
     return None
 
 
-def _prepare_input_messages(
+def prepare_input_messages(
     messages: Iterable[Any] | None,
 ) -> list[InputMessage]:
     if not messages:
@@ -279,7 +272,7 @@ def _prepare_input_messages(
     return chat_messages
 
 
-def _prepare_tool_definitions(
+def prepare_tool_definitions(
     tools: Iterable[Any] | None,
 ) -> list[ToolDefinition] | None:
     if not tools:
@@ -423,7 +416,6 @@ def create_inference_invocation(
     handler: TelemetryHandler,
     instance: Any,
     kwargs: dict[str, Any],
-    capture_content: bool,
     *,
     is_prompt: bool = False,
 ) -> InferenceInvocation:
