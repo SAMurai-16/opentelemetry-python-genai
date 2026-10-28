@@ -946,3 +946,24 @@ def test_generate_with_tuple_messages(
     assert inputs[0]["parts"] == [
         {"type": "text", "content": "Where is the Louvre?"}
     ]
+
+
+def test_generate_stream_with_tuple_messages(
+    instrument_with_content, span_exporter
+) -> None:
+    model = transformers_model(stream_chunks=["In ", "Paris"])
+    tuple_messages = (
+        {
+            "role": "user",
+            "content": ({"type": "text", "text": "Where is the Louvre?"},),
+        },
+    )
+    list(model.generate_stream(messages=tuple_messages))
+
+    (span,) = spans_by_operation(span_exporter.get_finished_spans(), "chat")
+    assert attr(span, GenAI.GEN_AI_REQUEST_STREAM) is True
+    inputs = parse_messages(span, GenAI.GEN_AI_INPUT_MESSAGES)
+    assert inputs[0]["role"] == "user"
+    assert inputs[0]["parts"] == [
+        {"type": "text", "content": "Where is the Louvre?"}
+    ]
